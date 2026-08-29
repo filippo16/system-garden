@@ -1,0 +1,25 @@
+* text=auto
+
+*.ino text
+*.cpp text
+*.h text
+*.hpp text
+*.md text
+*.json text
+*.ini text
+*.yml text
+*.yaml text
+*.html text
+*.css text
+*.js text
+
+# Avoid CRLF issues on Windows for generated files
+*.bin binary
+*.elf binary
+*.hex binary
+*.zip binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
