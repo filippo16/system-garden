@@ -38,6 +38,10 @@ WiFiClientSecure secureClient;
 PubSubClient mqttClient(secureClient);
 
 bool mqttWasConnected = false;
+unsigned long lastWifiAttemptMs = 0;
+const unsigned long WIFI_RETRY_INTERVAL_MS = 10000;
+unsigned long lastMqttAttemptMs = 0;
+const unsigned long MQTT_RETRY_INTERVAL_MS = 5000;
 bool rainMode = false;
 String sectorNames[8] = {
   "Settore 1 sud dinamici", "Settore 2 sud giro casa/nord pozzo statici", "Settore 3 ovest dinamici e statici lato nord giardinetto", "Settore 4 aiuole nord e bonsai grandi",
@@ -658,40 +662,60 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
   publishInfo("relay_updated");
 }
 
-void connectWiFi() {
+void handleWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
 
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+  unsigned long now = millis();
+  if (now - lastWifiAttemptMs >= WIFI_RETRY_INTERVAL_MS) {
+    lastWifiAttemptMs = now;
+    WiFi.disconnect();
+    WiFi.begin(ssid, password);
   }
 }
 
-void connectMqtt(bool isReconnect) {
-  while (!mqttClient.connected()) {
+void handleMqtt() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  if (mqttClient.connected()) {
+    mqttClient.loop();
+    return;
+  }
+
+  unsigned long now = millis();
+  if (now - lastMqttAttemptMs >= MQTT_RETRY_INTERVAL_MS) {
+    lastMqttAttemptMs = now;
+
     if (mqttClient.connect(CLIENT_ID, MQTT_USER, MQTT_PASS)) {
       mqttClient.subscribe(TOPIC_COMMAND);
 
-      if (isReconnect) {
+      if (mqttWasConnected) {
         mqttClient.publish(TOPIC_LOG, "{\"message\": \"Reconnected after disconnection\"}");
+        publishInfo("reconnected");
+      } else {
+        publishInfo("connected");
       }
-
       mqttWasConnected = true;
-      publishInfo(isReconnect ? "reconnected" : "connected");
-    } else {
-      delay(2000);
     }
   }
 }
 
 void setup() {
   Wire.begin();
-
-  connectWiFi();
+  writePCF(); // Spegne immediatamente tutti i relay all'avvio per massima sicurezza hardware
 
   LittleFS.begin();
   loadSettings();
   loadPrograms();
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(ssid, password);
+
+  // Tentativo di connessione iniziale con timeout breve di 8 secondi, per non bloccare lo startup se offline
+  unsigned long startWifiMs = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - startWifiMs < 8000)) {
+    delay(100);
+  }
 
   configTime(TZ_OFFSET_SECONDS, DST_OFFSET_SECONDS, NTP_SERVER_1, NTP_SERVER_2);
 
@@ -700,22 +724,17 @@ void setup() {
   mqttClient.setBufferSize(MQTT_BUFFER_SIZE);
   mqttClient.setCallback(onMqttMessage);
 
-  connectMqtt(false);
-
-  writePCF(); // turn everything off at startup
+  if (WiFi.status() == WL_CONNECTED) {
+    if (mqttClient.connect(CLIENT_ID, MQTT_USER, MQTT_PASS)) {
+      mqttClient.subscribe(TOPIC_COMMAND);
+      mqttWasConnected = true;
+      publishInfo("connected");
+    }
+  }
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    connectWiFi();
-  }
-
-  if (!mqttClient.connected()) {
-    bool reconnectEvent = mqttWasConnected;
-    mqttWasConnected = false;
-    connectMqtt(reconnectEvent);
-  }
-
-  mqttClient.loop();
+  handleWiFi();
+  handleMqtt();
   processPrograms();
 }
