@@ -6,6 +6,7 @@ Firmware PlatformIO per un ESP8266 che gestisce un sistema di irrigazione domest
 
 - [PROJECT.md](PROJECT.md) — contesto completo per agent AI e manutenzione del progetto
 - [MQTT_COMMANDS.md](MQTT_COMMANDS.md) — lista dei comandi MQTT supportati
+- [ARCHITECTURE_TELEGRAM_VPS.md](ARCHITECTURE_TELEGRAM_VPS.md) — architettura VPS, integrazione Telegram e resilienza offline
 
 ## Panoramica rapida
 
