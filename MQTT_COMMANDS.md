@@ -444,7 +444,95 @@ Effetto:
 
 
 
-## 11) Tipi di "reason" nel payload info
+## 11) Esporta Backup Completo
+
+Payload su `command`:
+
+```json
+{
+  "action": "get_backup"
+}
+```
+
+Effetto:
+- Genera ed invia su `info` un pacchetto JSON di backup contenente tutte le impostazioni globali (`settings`) e tutti i programmi salvati (`programs`).
+
+Esempio di output su `info`:
+
+```json
+{
+  "reason": "backup",
+  "time": "2026-08-30T10:00:00",
+  "settings": {
+    "rainMode": false,
+    "sectorNames": [
+      "Settore 1 sud dinamici",
+      "Settore 2 sud giro casa/nord pozzo statici",
+      "Settore 3 ovest dinamici e statici lato nord giardinetto",
+      "Settore 4 aiuole nord e bonsai grandi",
+      "Settore 5 dinamici Giordano e serra casa",
+      "Settore 6 statici casa vecchia lato ovest ed est",
+      "Settore 7",
+      "Settore 8"
+    ]
+  },
+  "programs": [
+    {
+      "id": "irrigazione_mattina",
+      "startHour": 6,
+      "startMinute": 30,
+      "enabled": true,
+      "sequence": [
+        { "relay": 1, "duration": 10 },
+        { "relay": 2, "duration": 15 }
+      ]
+    }
+  ]
+}
+```
+
+## 12) Ripristina Backup Completo
+
+Payload su `command`:
+
+```json
+{
+  "action": "restore_backup",
+  "settings": {
+    "rainMode": false,
+    "sectorNames": [
+      "Settore 1 sud dinamici",
+      "Settore 2 sud giro casa/nord pozzo statici",
+      "Settore 3 ovest dinamici e statici lato nord giardinetto",
+      "Settore 4 aiuole nord e bonsai grandi",
+      "Settore 5 dinamici Giordano e serra casa",
+      "Settore 6 statici casa vecchia lato ovest ed est",
+      "Settore 7",
+      "Settore 8"
+    ]
+  },
+  "programs": [
+    {
+      "id": "irrigazione_mattina",
+      "startHour": 6,
+      "startMinute": 30,
+      "enabled": true,
+      "sequence": [
+        { "relay": 1, "duration": 10 },
+        { "relay": 2, "duration": 15 }
+      ]
+    }
+  ]
+}
+```
+
+Effetto:
+- Ferma eventuali sequenze in corso.
+- Sovrascrive persistentemente `/settings.json` e `/programs.json` su LittleFS.
+- Ricarica immediatamente la configurazione in memoria senza bisogno di riavviare.
+- Pubblica l'evento con `"reason": "backup_restored"` su `info` e conferma su `log`.
+
+## 13) Tipi di "reason" nel payload info
 
 Il campo `"reason"` inviato nel feed `info` descrive l'evento che ha scatenato la pubblicazione dello stato. Ecco l'elenco completo di tutte le *reason* esistenti:
 
@@ -452,6 +540,8 @@ Il campo `"reason"` inviato nel feed `info` descrive l'evento che ha scatenato l
 | ------ | -------------------- |
 | `connected` / `reconnected` | All'avvio del dispositivo o dopo aver ristabilito la connessione al broker MQTT. |
 | `on_demand` | In risposta al comando esplicito `get_info`. |
+| `backup` | In risposta al comando esplicito `get_backup`. |
+| `backup_restored` | A seguito del ripristino di un backup con successo tramite `restore_backup`. |
 | `relay_updated` | Accensione/Spegimento di un singolo relay tramite comando manuale. |
 | `rain_mode_updated` | Modifica dello stato del Rain Mode (abilitato/disabilitato). |
 | `rain_mode_blocked` | Quando si tenta di accendere manualmente un relay, ma il Rain Mode è attivo. |

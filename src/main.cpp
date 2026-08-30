@@ -149,6 +149,53 @@ void publishInfo(const char* reason) {
   }
 }
 
+void publishBackup() {
+  JsonDocument out;
+  out["reason"] = "backup";
+  out["time"] = getIsoLocalTime();
+
+  JsonObject settings = out["settings"].to<JsonObject>();
+  settings["rainMode"] = rainMode;
+  JsonArray namesArray = settings["sectorNames"].to<JsonArray>();
+  for (uint8_t i = 0; i < 8; i++) {
+    namesArray.add(sectorNames[i]);
+  }
+
+  JsonArray programArray = out["programs"].to<JsonArray>();
+  for (size_t i = 0; i < programCount; i++) {
+    JsonObject p = programArray.add<JsonObject>();
+    p["id"] = programs[i].id;
+    p["startHour"] = programs[i].startHour;
+    p["startMinute"] = programs[i].startMinute;
+    p["enabled"] = programs[i].enabled;
+
+    JsonArray seq = p["sequence"].to<JsonArray>();
+    for (uint8_t s = 0; s < programs[i].stepCount; s++) {
+      JsonObject st = seq.add<JsonObject>();
+      st["relay"] = programs[i].steps[s].relay + 1;
+      st["duration"] = programs[i].steps[s].durationMin;
+    }
+  }
+
+  String payload;
+  serializeJson(out, payload);
+  if (payload.length() == 0) {
+    publishLog("{\"error\":\"Empty backup payload\"}");
+    return;
+  }
+
+  if (payload.length() > (MQTT_BUFFER_SIZE - 128)) {
+    publishLog("{\"error\":\"Backup payload too large\"}");
+    return;
+  }
+
+  if (mqttClient.publish(TOPIC_INFO, payload.c_str())) {
+    publishLog("{\"message\":\"Backup published to info topic\"}");
+  } else {
+    publishLog("{\"error\":\"Failed to publish backup\"}");
+  }
+}
+
 int findProgramIndexById(const String& id) {
   for (size_t i = 0; i < programCount; i++) {
     if (programs[i].id == id) return (int)i;
@@ -430,6 +477,105 @@ void stopSequence() {
   transitionPauseUntilTs = 0;
 }
 
+bool restoreBackup(const JsonObjectConst& doc) {
+  if (sequenceRunning) {
+    stopSequence();
+  }
+
+  // 1. Process Settings if present
+  bool settingsFound = false;
+  JsonObjectConst settingsObj = doc["settings"].as<JsonObjectConst>();
+  if (!settingsObj.isNull()) {
+    if (settingsObj["rainMode"].is<bool>()) {
+      rainMode = settingsObj["rainMode"].as<bool>();
+      settingsFound = true;
+    }
+    if (settingsObj["sectorNames"].is<JsonArrayConst>()) {
+      JsonArrayConst names = settingsObj["sectorNames"].as<JsonArrayConst>();
+      for (size_t i = 0; i < 8 && i < names.size(); i++) {
+        sectorNames[i] = names[i].as<String>();
+      }
+      settingsFound = true;
+    }
+  } else {
+    if (doc["rainMode"].is<bool>()) {
+      rainMode = doc["rainMode"].as<bool>();
+      settingsFound = true;
+    }
+    if (doc["sectorNames"].is<JsonArrayConst>()) {
+      JsonArrayConst names = doc["sectorNames"].as<JsonArrayConst>();
+      for (size_t i = 0; i < 8 && i < names.size(); i++) {
+        sectorNames[i] = names[i].as<String>();
+      }
+      settingsFound = true;
+    }
+  }
+
+  if (settingsFound) {
+    if (!saveSettings()) {
+      publishLog("{\"error\":\"Failed to save restored settings\"}");
+      return false;
+    }
+  }
+
+  // 2. Process Programs if present
+  if (doc["programs"].is<JsonArrayConst>()) {
+    JsonArrayConst arr = doc["programs"].as<JsonArrayConst>();
+    programCount = 0;
+
+    for (JsonObjectConst p : arr) {
+      if (programCount >= MAX_PROGRAMS) break;
+
+      ProgramItem item;
+      item.id = String((const char*)(p["id"] | ""));
+      if (p["start"].is<JsonObjectConst>()) {
+        JsonObjectConst stObj = p["start"].as<JsonObjectConst>();
+        item.startHour = stObj["hour"] | 0;
+        item.startMinute = stObj["minute"] | 0;
+      } else {
+        item.startHour = p["startHour"] | 0;
+        item.startMinute = p["startMinute"] | 0;
+      }
+
+      item.enabled = p["enabled"] | true;
+      item.stepCount = 0;
+      item.lastRunDay = -1;
+
+      if (item.id.length() == 0) {
+        item.id = String("program_") + String(programCount + 1);
+      }
+      if (item.startHour > 23 || item.startMinute > 59) continue;
+
+      JsonArrayConst seq = p["sequence"].as<JsonArrayConst>();
+      if (!seq.isNull()) {
+        for (JsonObjectConst st : seq) {
+          if (item.stepCount >= MAX_STEPS_PER_PROGRAM) break;
+          int relayNumber = st["relay"] | -1;
+          int duration = st["duration"] | -1;
+          int relayIndex = (relayNumber >= 1 && relayNumber <= 8) ? (relayNumber - 1) : relayNumber;
+
+          if (relayIndex < 0 || relayIndex > 7 || duration <= 0) continue;
+          item.steps[item.stepCount].relay = (uint8_t)relayIndex;
+          item.steps[item.stepCount].durationMin = (uint16_t)duration;
+          item.stepCount++;
+        }
+      }
+
+      if (item.stepCount == 0) continue;
+      programs[programCount] = item;
+      programCount++;
+    }
+
+    if (!savePrograms()) {
+      publishLog("{\"error\":\"Failed to save restored programs\"}");
+      return false;
+    }
+  }
+
+  publishLog("{\"message\":\"Backup restored successfully\"}");
+  return true;
+}
+
 void startProgramSequence(int index, time_t now, bool forceStart = false) {
   if (rainMode && !forceStart) return;
   if (index < 0 || index >= (int)programCount) return;
@@ -562,6 +708,18 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
 
   if (action == "get_info") {
     publishInfo("on_demand");
+    return;
+  }
+
+  if (action == "get_backup") {
+    publishBackup();
+    return;
+  }
+
+  if (action == "restore_backup") {
+    if (restoreBackup(doc.as<JsonObjectConst>())) {
+      publishInfo("backup_restored");
+    }
     return;
   }
 

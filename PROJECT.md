@@ -228,6 +228,8 @@ La documentazione dettagliata è in `MQTT_COMMANDS.md`.
 - `start_program` — avvia manualmente un programma per test
 - `set_rain_mode` — attiva/disattiva rain mode
 - `set_sector_names` — aggiorna nomi settori
+- `get_backup` — esporta configurazione completa (settings + programmi)
+- `restore_backup` — ripristina e sovrascrive configurazione su LittleFS
 
 Inoltre, payload generici con:
 - `relay`: numero relay 1..8
