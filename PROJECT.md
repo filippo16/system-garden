@@ -280,21 +280,20 @@ Questo garantisce che i programmi vengano eseguiti in base all’ora locale, ma 
 ### `setup()`
 Sequence di avvio:
 1. `Wire.begin();`
-2. connessione Wi‑Fi
+2. `writePCF();` per spegnere immediatamente tutti i relay all’avvio (sicurezza hardware)
 3. `LittleFS.begin();`
 4. `loadSettings();`
 5. `loadPrograms();`
-6. `configTime(...)`
-7. setup client MQTT
-8. `connectMqtt(false);`
-9. `writePCF();` per spegnere tutti i relay all’avvio
+6. `WiFi.mode(WIFI_STA);` e `WiFi.begin(...)` con timeout iniziale non bloccante
+7. `configTime(...)`
+8. setup client MQTT (`setInsecure`, `setServer`, `setBufferSize`, `setCallback`)
+9. tentativo di prima connessione MQTT se Wi-Fi già associato
 
 ### `loop()`
-Sequence ciclica:
-1. controlla Wi‑Fi
-2. riconnette MQTT se necessario
-3. `mqttClient.loop();`
-4. `processPrograms();`
+Sequence ciclica non bloccante:
+1. `handleWiFi();` — riconnessione Wi-Fi non bloccante a intervalli regolari (10s)
+2. `handleMqtt();` — elaborazione messaggi MQTT o riconnessione non bloccante a intervalli (5s) senza `delay()`
+3. `processPrograms();` — elaborazione autonoma costante di programmi e sequenze di irrigazione
 
 ---
 
