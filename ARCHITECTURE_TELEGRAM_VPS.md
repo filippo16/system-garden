@@ -105,11 +105,13 @@ Il servizio supervisore cloud è completamente implementato e include:
 | [`oracle_vps/config.py`](oracle_vps/config.py) | Configurazione centralizzata con caricamento `.env` e validazione whitelist utenti. |
 | [`oracle_vps/mqtt_manager.py`](oracle_vps/mqtt_manager.py) | Client MQTT over TLS (porta 8883) verso HiveMQ Cloud con cache di stato e dispatcher comandi. |
 | [`oracle_vps/bot_handlers.py`](oracle_vps/bot_handlers.py) | Gestione menu Telegram in-place, popup modali, navigazione e decoratore `@authorized_only`. |
-| [`oracle_vps/notifier.py`](oracle_vps/notifier.py) | Notifiche push per eventi critici e loop del Dead Man's Switch (timeout 15 min). |
+| [`oracle_vps/notifier.py`](oracle_vps/notifier.py) | Notifiche push per eventi critici e gestione allarmi basata su MQTT LWT (Last Will and Testament). |
+| [`oracle_vps/DEAD_MAN_SWITCH_GUIDE.md`](oracle_vps/DEAD_MAN_SWITCH_GUIDE.md) | Guida tecnica e codice pronto per reimplementare il Dead Man's Switch con ping in futuro se necessario. |
 | [`oracle_vps/main.py`](oracle_vps/main.py) | Entrypoint principale con gestione lifecycle asincrono e log puliti. |
 | [`oracle_vps/Dockerfile`](oracle_vps/Dockerfile) | Immagine container multi-architettura (ARM64 / AMD64) basata su Python 3.11 slim. |
 | [`oracle_vps/docker-compose.yml`](oracle_vps/docker-compose.yml) | Orchestrazione con riavvio automatico continuo (`restart: unless-stopped`). |
 | [`oracle_vps/DEPLOY.md`](oracle_vps/DEPLOY.md) | Guida passo-passo al deploy sia tramite Docker che con systemd Linux. |
+
 
 ---
 
