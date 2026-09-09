@@ -19,6 +19,7 @@ const char* TOPIC_COMMAND = "command";
 const char* TOPIC_INFO = "info";
 const char* TOPIC_LOG = "log";
 const uint16_t MQTT_BUFFER_SIZE = 4096;
+const char* MQTT_LWT_MESSAGE = "{\"error\":\"ESP8266 disconnected unexpectedly (LWT)\"}";
 
 const char* PROGRAM_FILE = "/programs.json";
 const char* SETTINGS_FILE = "/settings.json";
@@ -843,7 +844,7 @@ void handleMqtt() {
   if (now - lastMqttAttemptMs >= MQTT_RETRY_INTERVAL_MS) {
     lastMqttAttemptMs = now;
 
-    if (mqttClient.connect(CLIENT_ID, MQTT_USER, MQTT_PASS)) {
+    if (mqttClient.connect(CLIENT_ID, MQTT_USER, MQTT_PASS, TOPIC_LOG, 1, false, MQTT_LWT_MESSAGE)) {
       mqttClient.subscribe(TOPIC_COMMAND);
 
       if (mqttWasConnected) {
@@ -883,7 +884,7 @@ void setup() {
   mqttClient.setCallback(onMqttMessage);
 
   if (WiFi.status() == WL_CONNECTED) {
-    if (mqttClient.connect(CLIENT_ID, MQTT_USER, MQTT_PASS)) {
+    if (mqttClient.connect(CLIENT_ID, MQTT_USER, MQTT_PASS, TOPIC_LOG, 1, false, MQTT_LWT_MESSAGE)) {
       mqttClient.subscribe(TOPIC_COMMAND);
       mqttWasConnected = true;
       publishInfo("connected");

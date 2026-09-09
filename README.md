@@ -19,9 +19,10 @@ Firmware PlatformIO per un ESP8266 che gestisce un sistema di irrigazione domest
 
 ## File chiave
 
-- [src/main.cpp](src/main.cpp) — firmware principale
+- [src/main.cpp](src/main.cpp) — firmware principale ESP8266
 - [platformio.ini](platformio.ini) — configurazione PlatformIO
 - [data/index.html](data/index.html) — dashboard web MQTT di controllo
+- [oracle_vps/](oracle_vps/) — servizio supervisore VPS con Bot Telegram, Whitelist ID e Dead Man's Switch
 
 ## Build
 
