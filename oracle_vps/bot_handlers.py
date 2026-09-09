@@ -19,7 +19,19 @@ logger = logging.getLogger("BotHandlers")
 def authorized_only(func: Callable):
     """Decoratore per consentire l'esecuzione solo agli ID autorizzati."""
     @functools.wraps(func)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+    async def wrapper(*args, **kwargs):
+        # Cerca l'oggetto Update tra gli argomenti (es. args[1] se metodo con self, oppure args[0])
+        update: Update | None = None
+        for arg in args:
+            if isinstance(arg, Update):
+                update = arg
+                break
+        if update is None:
+            update = kwargs.get("update")
+
+        if not update:
+            return await func(*args, **kwargs)
+
         user = update.effective_user
         if not user or not is_user_allowed(user.id):
             uid = user.id if user else "Sconosciuto"
@@ -40,8 +52,10 @@ def authorized_only(func: Callable):
             elif update.message:
                 await update.message.reply_text(msg_text, parse_mode=ParseMode.MARKDOWN)
             return
-        return await func(update, context, *args, **kwargs)
+
+        return await func(*args, **kwargs)
     return wrapper
+
 
 
 class BotHandlers:
