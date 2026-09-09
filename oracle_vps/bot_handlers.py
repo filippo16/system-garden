@@ -17,6 +17,7 @@ from config import is_user_allowed, ALLOWED_USER_IDS
 from mqtt_manager import MQTTManager
 
 logger = logging.getLogger("BotHandlers")
+DIVIDER = "───────────────────"  # 19 caratteri (esattamente 1 in meno per display mobile)
 
 
 def authorized_only(func: Callable):
@@ -75,6 +76,20 @@ class BotHandlers:
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
+
+    @staticmethod
+    def _format_esp_time(raw_ts: str) -> str:
+        if not raw_ts or raw_ts == "unsynced":
+            return "Non sincronizzato"
+        if "T" in raw_ts:
+            try:
+                date_part, time_part = raw_ts.split("T")
+                y, m, d = date_part.split("-")
+                return f"{time_part} ({d}/{m}/{y})"
+            except Exception:
+                return raw_ts
+        return raw_ts
+
 
     # -------------------------------------------------------------
     # Auto-Refresh quando arriva un nuovo pacchetto INFO dall'ESP8266
@@ -139,60 +154,62 @@ class BotHandlers:
         if not state:
             return (
                 "🌿 *CENTRALINA IRRIGAZIONE*\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{DIVIDER}\n"
                 "⏳ _In attesa dei dati dall'ESP8266..._\n"
-                "Premi 'Aggiorna' se la centralina è appena stata accesa."
+                "Premi *Aggiorna* tra pochi istanti."
             )
 
-        esp_time = state.get("time", "N/D")
+        esp_time = self._format_esp_time(state.get("time", ""))
         rain_mode = state.get("rainMode", False)
         seq_running = state.get("sequenceRunning", False)
         relays = state.get("relays", [False] * 8)
         sector_names = state.get("sectorNames", [f"Settore {i+1}" for i in range(8)])
 
-        # Banner stato rapido
+        # Banner stato
         if seq_running:
             prog_id = state.get("runningProgramId", "N/D")
             step = state.get("runningStep", "?")
-            header_status = f"🚿 *IRRIGAZIONE IN CORSO*\n• Programma: `{prog_id}`\n• Step/Settore: `{step}`"
+            header_status = f"🚿 *IN CORSO:* `{prog_id}` (Step {step})"
         elif rain_mode:
-            header_status = "🌧️ *MODALITÀ PIOGGIA ATTIVA*\n_Tutte le irrigazioni sono temporaneamente sospese._"
+            header_status = "🌧️ *MODALITÀ PIOGGIA ATTIVA 🔴*\n_Irrigazioni automatiche e manuali sospese._"
         else:
-            header_status = "🟢 *SISTEMA PRONTO / STANDBY*"
+            header_status = "🟢 *STATO: STANDBY (Pronto)*"
 
-        # Elenco relè attualmente accesi
+        # Elenco valvole aperte
         active_sectors = []
         for i, is_on in enumerate(relays):
             if is_on:
                 name = sector_names[i] if i < len(sector_names) else f"Settore {i+1}"
-                active_sectors.append(f"• S{i+1}: *{name}*")
+                active_sectors.append(f"• *S{i+1}:* {name}")
 
         active_str = "\n".join(active_sectors) if active_sectors else "• _Nessun settore attivo al momento._"
 
         return (
-            "🌿 *PANNELLO DI CONTROLLO IRRIGAZIONE*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{header_status}\n\n"
-            f"💧 *Settori Attivi (Elettrovalvole Aperte):*\n{active_str}\n\n"
+            "🌿 *PANNELLO IRRIGAZIONE*\n"
+            f"{DIVIDER}\n"
+            f"{header_status}\n"
+            f"{DIVIDER}\n"
+            f"💧 *Valvole Aperte:*\n{active_str}\n"
+            f"{DIVIDER}\n"
             f"🕒 *Orario ESP:* `{esp_time}`"
         )
 
     def _build_main_keyboard(self) -> InlineKeyboardMarkup:
         state = self.mqtt.get_state()
         rain_mode = state.get("rainMode", False) if state else False
-        rain_btn_text = "🌧️ Pioggia: ATTIVA 🔴" if rain_mode else "🌧️ Pioggia: DISATTIVA 🟢"
+        rain_btn_text = "🌧️ Pioggia: ON 🔴" if rain_mode else "🌧️ Pioggia: OFF 🟢"
 
         keyboard = [
             [
-                InlineKeyboardButton("🚰 Controllo Settori", callback_data="view_sectors"),
-                InlineKeyboardButton("📊 Dettagli Stato", callback_data="view_status"),
+                InlineKeyboardButton("🚰 Settori", callback_data="view_sectors"),
+                InlineKeyboardButton("📊 Dettagli", callback_data="view_status"),
             ],
             [
-                InlineKeyboardButton("▶️ Avvia Programma", callback_data="view_programs"),
+                InlineKeyboardButton("▶️ Programmi", callback_data="view_programs"),
                 InlineKeyboardButton(rain_btn_text, callback_data="act_toggle_rain"),
             ],
             [
-                InlineKeyboardButton("⏹️ STOP Emergenza", callback_data="act_stop"),
+                InlineKeyboardButton("⏹️ STOP", callback_data="act_stop"),
                 InlineKeyboardButton("🔄 Aggiorna", callback_data="act_refresh"),
             ],
         ]
@@ -207,20 +224,20 @@ class BotHandlers:
 
         if rain_mode:
             state_summary = (
-                "🌧️ *ATTENZIONE: MODALITÀ PIOGGIA ATTIVA! 🔴*\n"
-                "_L'accensione dei settori è bloccata. Disattiva la pioggia per poter irrigare._"
+                "🌧️ *MODALITÀ PIOGGIA ATTIVA 🔴*\n"
+                "_Comandi bloccati. Disattiva la pioggia per irrigare._"
             )
         elif any_on:
-            state_summary = "🟢 _Ci sono settori attivi!_"
+            state_summary = "🟢 *IRRIGAZIONE IN CORSO*"
         else:
-            state_summary = "⚫ _Tutti i settori sono spenti._"
+            state_summary = "⚫ *Tutti i settori sono spenti*"
 
         return (
-            "🚰 *CONTROLLO MANUALE SETTORI*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{state_summary}\n\n"
-            "Tocca un pulsante per **accendere** (🟢) o **spegnere** (⚫) il settore corrispondente:\n"
-            "_(I pulsanti si aggiornano istantaneamente)_"
+            "🚰 *CONTROLLO SETTORI*\n"
+            f"{DIVIDER}\n"
+            f"{state_summary}\n"
+            f"{DIVIDER}\n"
+            "Tocca per accendere (🟢) o spegnere (⚫):"
         )
 
     def _build_sectors_keyboard(self) -> InlineKeyboardMarkup:
@@ -236,21 +253,20 @@ class BotHandlers:
                 if j < 8:
                     name = sector_names[j]
                     is_on = relays[j]
-                    short_name = name[:13] + ".." if len(name) > 15 else name
-                    icon = "🟢 ON" if is_on else "⚫ OFF"
+                    short_name = name[:10] + ".." if len(name) > 12 else name
+                    icon = "🟢" if is_on else "⚫"
                     label = f"{icon} S{j+1}: {short_name}"
                     row.append(InlineKeyboardButton(label, callback_data=f"act_toggle_relay_{j+1}"))
             keyboard.append(row)
 
-        bottom_row = []
         if rain_mode:
             keyboard.append([
-                InlineKeyboardButton("🌧️ Disattiva Modalità Pioggia 🟢", callback_data="act_toggle_rain")
+                InlineKeyboardButton("🌧️ Disattiva Pioggia 🟢", callback_data="act_toggle_rain")
             ])
 
         keyboard.append([
             InlineKeyboardButton("⏹️ Spegni Tutto", callback_data="act_stop"),
-            InlineKeyboardButton("🔙 Menu Principale", callback_data="view_main"),
+            InlineKeyboardButton("🔙 Indietro", callback_data="view_main"),
         ])
         return InlineKeyboardMarkup(keyboard)
 
@@ -261,29 +277,29 @@ class BotHandlers:
         if not state:
             return "⚠️ *Nessun dato ancora disponibile.*"
 
-        esp_time = state.get("time", "Non sincronizzato")
+        esp_time = self._format_esp_time(state.get("time", ""))
         rain_mode = state.get("rainMode", False)
         seq_running = state.get("sequenceRunning", False)
         relays = state.get("relays", [False] * 8)
         sector_names = state.get("sectorNames", [f"Settore {i+1}" for i in range(8)])
 
-        rain_str = "🔴 *ATTIVO (Impianto Bloccato)*" if rain_mode else "🟢 Disattivo (Normale)"
-        seq_str = "🚿 In corso" if seq_running else "⏸️ In standby"
+        rain_str = "Attiva 🔴" if rain_mode else "Disattiva 🟢"
+        seq_str = "In corso 🚿" if seq_running else "Standby ⏸️"
 
         lines = [
-            "📊 *DETTAGLI STATO CENTRALINA*",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            f"🕒 *Orario ESP:* `{esp_time}`",
-            f"🌧️ *Modalità Pioggia:* {rain_str}",
-            f"⚡ *Esecuzione:* {seq_str}",
-            "",
-            "📋 *Riepilogo 8 Settori:*",
+            "📊 *DETTAGLI CENTRALE*",
+            DIVIDER,
+            f"🕒 *Orario:* `{esp_time}`",
+            f"🌧️ *Pioggia:* {rain_str}",
+            f"⚡ *Stato:* {seq_str}",
+            DIVIDER,
+            "📋 *Elettrovalvole:*",
         ]
         for i in range(8):
             name = sector_names[i] if i < len(sector_names) else f"Settore {i+1}"
             is_on = relays[i] if i < len(relays) else False
-            icon = "🟢 ACCESO" if is_on else "⚫ Spento"
-            lines.append(f"  {i+1}. *{name}*: {icon}")
+            icon = "🟢" if is_on else "⚫"
+            lines.append(f"{icon} *S{i+1}:* {name}")
 
         return "\n".join(lines)
 
@@ -291,18 +307,20 @@ class BotHandlers:
         return InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("🔄 Aggiorna", callback_data="act_refresh"),
-                InlineKeyboardButton("🔙 Menu Principale", callback_data="view_main"),
+                InlineKeyboardButton("🔙 Indietro", callback_data="view_main"),
             ]
         ])
 
     # --- Vista 4: AVVIO PROGRAMMI DI TEST ---
     def _format_programs_text(self) -> str:
         return (
-            "▶️ *AVVIO PROGRAMMI PER TEST*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "Seleziona un programma per farlo partire immediatamente:\n"
-            "_(Se un altro programma è attivo, verrà interrotto e sostituito)_"
+            "▶️ *PROGRAMMI DI TEST*\n"
+            f"{DIVIDER}\n"
+            "Seleziona un programma per avvio manuale:\n"
+            "_(Interrompe eventuali sequenze attive)_"
         )
+
+
 
     def _build_programs_keyboard(self) -> InlineKeyboardMarkup:
         state = self.mqtt.get_state()
