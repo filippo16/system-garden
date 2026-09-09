@@ -473,8 +473,9 @@ class BotHandlers:
         # --- AZIONE: REFRESH ---
         elif data == "act_refresh":
             self.mqtt.request_info()
-            await query.answer("Aggiornamento in corso...", show_alert=False)
+            await query.answer()
             await self._render_view(user_id, chat_id, message_id, current_view)
+
 
         # --- AZIONE: TOGGLE RELÈ ---
         elif data.startswith("act_toggle_relay_"):
