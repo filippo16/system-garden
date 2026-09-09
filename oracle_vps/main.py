@@ -22,7 +22,13 @@ logging.basicConfig(
     level=logging.INFO,
     handlers=[logging.StreamHandler(sys.stdout)],
 )
+# Silenzia i log ripetitivi del polling di Telegram e richieste HTTP
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("telegram.ext.Application").setLevel(logging.WARNING)
+
 logger = logging.getLogger("Main")
+
 
 
 def main() -> None:
@@ -45,10 +51,13 @@ def main() -> None:
 
     async def on_startup(application: Application) -> None:
         loop = asyncio.get_running_loop()
+        handlers.set_bot(application.bot)
+        handlers.set_event_loop(loop)
         notifier.set_event_loop(loop)
         # Avvia il task in background per il monitoraggio della centralina
         asyncio.create_task(notifier.run_dead_man_switch())
-        logger.info("Servizio Notifier e Dead Man's Switch avviati.")
+        logger.info("Servizio Notifier, Handlers e Dead Man's Switch avviati.")
+
 
     async def on_shutdown(application: Application) -> None:
         logger.info("Arresto in corso...")

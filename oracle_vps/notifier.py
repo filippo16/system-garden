@@ -59,37 +59,22 @@ class Notifier:
             self.is_flagged_offline = False
             self._safe_broadcast("✅ *Centralina Irrigazione tornata ONLINE*\nComunicazione con l'ESP8266 ripristinata.")
 
-        # Notifiche specifiche basate sugli eventi documentati in MQTT_COMMANDS.md
+        # Notifiche push essenziali (solo avvio schedulato automatico, completamento ciclo e blocchi)
         if reason == "program_started":
             prog_id = data.get("runningProgramId", "N/D")
-            self._safe_broadcast(f"🌱 *Irrigazione Avviata*\nIl programma `{prog_id}` è partito regolarmente.")
-
-        elif reason == "program_test_started":
-            prog_id = data.get("runningProgramId", "N/D")
-            self._safe_broadcast(f"▶️ *Test Irrigazione Avviato*\nAvvio manuale del programma `{prog_id}`.")
-
-        elif reason == "program_step":
-            prog_id = data.get("runningProgramId", "N/D")
-            step = data.get("runningStep", "?")
-            self._safe_broadcast(f"💧 *Avanzamento Programma*\n`{prog_id}`: passaggio allo step/settore `{step}`.")
+            self._safe_broadcast(f"🌱 *Irrigazione Automatica Avviata*\nIl programma schedulato `{prog_id}` è partito.")
 
         elif reason == "program_completed":
             prog_id = data.get("runningProgramId", "N/D")
             self._safe_broadcast(f"✅ *Irrigazione Completata*\nIl programma `{prog_id}` è terminato con successo.")
 
-        elif reason == "program_stopped":
-            self._safe_broadcast("🛑 *Irrigazione Arrestata*\nLa sequenza attiva è stata interrotta.")
-
-        elif reason == "rain_mode_updated":
-            mode = data.get("rainMode", False)
-            desc = "ATTIVATA 🔴 (Irrigazione sospesa)" if mode else "DISATTIVATA 🟢 (Impianto abilitato)"
-            self._safe_broadcast(f"🌧️ *Modalità Pioggia:* {desc}")
-
         elif reason == "rain_mode_blocked":
-            self._safe_broadcast("⚠️ *Avviso:* Tentativo di irrigazione respinto perché la *Modalità Pioggia* è attiva.")
+            self._safe_broadcast("⚠️ *Avviso:* Comando irrigazione bloccato perché la *Modalità Pioggia* è attiva.")
 
-        elif reason in ("connected", "reconnected"):
-            self._safe_broadcast("🔌 *Centralina Riconnessa*\nL'ESP8266 si è riconnesso con successo ad HiveMQ Cloud.")
+        elif reason == "reconnected" and self.is_flagged_offline:
+            self.is_flagged_offline = False
+            self._safe_broadcast("🔌 *Centralina Riconnessa*\nL'ESP8266 ha ripristinato la connessione.")
+
 
     def _handle_log_event(self, data: dict[str, Any]) -> None:
         if self.is_flagged_offline:
@@ -98,7 +83,11 @@ class Notifier:
 
         if "error" in data:
             err_msg = data["error"]
+            # Non inviare messaggi di spam in chat se si tratta del blocco della modalità pioggia
+            if "Rain mode active" in err_msg or "rain_mode" in err_msg.lower():
+                return
             self._safe_broadcast(f"⚠️ *Allarme Centralina (Errore)*\n`{err_msg}`")
+
 
     # -------------------------------------------------------------
     # Task Watchdog / Dead Man's Switch
