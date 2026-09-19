@@ -7,7 +7,7 @@ e aggiornamento automatico live del messaggio quando arrivano dati MQTT.
 import asyncio
 import functools
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
@@ -301,6 +301,19 @@ class BotHandlers:
             icon = "🟢" if is_on else "⚫"
             lines.append(f"{icon} *S{i+1}:* {name}")
 
+        programs = state.get("programs", [])
+        if programs:
+            lines.append(DIVIDER)
+            lines.append("📅 *Programmi configurati:*")
+            for p in programs:
+                pid = p.get("id", "programma")
+                h = p.get("startHour", 0)
+                m = p.get("startMinute", 0)
+                enabled = p.get("enabled", True)
+                status_icon = "🟢" if enabled else "⏸️"
+                days_label = self._format_program_days(p.get("days"))
+                lines.append(f"• {status_icon} *{pid}* `{h:02d}:{m:02d}` ({days_label})")
+
         return "\n".join(lines)
 
     def _build_status_keyboard(self) -> InlineKeyboardMarkup:
@@ -311,16 +324,49 @@ class BotHandlers:
             ]
         ])
 
+    @staticmethod
+    def _format_program_days(days: Optional[list]) -> str:
+        if not days:
+            return "Tutti i giorni"
+        # Supporta convenzione ISO (1=Lun .. 7=Dom) e C (0=Dom)
+        normalized = sorted(set(7 if d == 0 else d for d in days if 0 <= d <= 7))
+        if len(normalized) == 7:
+            return "Tutti i giorni"
+        if normalized == [1, 2, 3, 4, 5]:
+            return "Lun-Ven (feriali)"
+        if normalized == [6, 7]:
+            return "Sab-Dom (weekend)"
+        day_names = {1: "Lun", 2: "Mar", 3: "Mer", 4: "Gio", 5: "Ven", 6: "Sab", 7: "Dom"}
+        return ", ".join(day_names[d] for d in normalized if d in day_names)
+
     # --- Vista 4: AVVIO PROGRAMMI DI TEST ---
     def _format_programs_text(self) -> str:
-        return (
-            "▶️ *PROGRAMMI DI TEST*\n"
-            f"{DIVIDER}\n"
-            "Seleziona un programma per avvio manuale:\n"
-            "_(Interrompe eventuali sequenze attive)_"
-        )
+        state = self.mqtt.get_state()
+        programs = state.get("programs", []) if state else []
 
+        lines = [
+            "▶️ *PROGRAMMI IRRIGAZIONE*",
+            DIVIDER,
+        ]
 
+        if not programs:
+            lines.append("_(Nessun programma configurato)_")
+        else:
+            lines.append("📋 *Programmi in memoria:*")
+            for p in programs:
+                pid = p.get("id", "programma")
+                h = p.get("startHour", 0)
+                m = p.get("startMinute", 0)
+                enabled = p.get("enabled", True)
+                status_icon = "🟢" if enabled else "⏸️"
+                days_label = self._format_program_days(p.get("days"))
+                lines.append(f"• {status_icon} *{pid}*: `{h:02d}:{m:02d}` | 📅 _{days_label}_")
+
+            lines.append("")
+            lines.append("Tocca per avviare il test manuale:")
+            lines.append("_(Interrompe eventuali sequenze attive)_")
+
+        return "\n".join(lines)
 
     def _build_programs_keyboard(self) -> InlineKeyboardMarkup:
         state = self.mqtt.get_state()

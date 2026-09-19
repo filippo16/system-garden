@@ -109,6 +109,7 @@ struct ProgramItem {
   uint8_t startHour;    // 0..23
   uint8_t startMinute;  // 0..59
   bool enabled;
+  uint8_t days;         // Bitmask: bit 0=Dom, 1=Lun, ..., 6=Sab (0x7F = tutti i giorni)
   uint8_t stepCount;
   ProgramStep steps[MAX_STEPS_PER_PROGRAM];
   int lastRunDay;
@@ -119,6 +120,7 @@ Ogni programma include:
 - ID univoco;
 - orario di partenza;
 - flag `enabled`;
+- bitmask `days` per i giorni settimanali attivi (supporta giorni alterni, feriali, singoli giorni);
 - sequenza di step;
 - ultimo giorno in cui è stato eseguito (per evitare doppia esecuzione nello stesso giorno).
 

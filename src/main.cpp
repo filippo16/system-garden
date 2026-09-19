@@ -59,10 +59,25 @@ struct ProgramItem {
   uint8_t startHour;    // 0..23
   uint8_t startMinute;  // 0..59
   bool enabled;
+  uint8_t days;         // bitmask: bit 0=Dom, bit 1=Lun, ..., bit 6=Sab (0x7F = tutti i giorni)
   uint8_t stepCount;
   ProgramStep steps[MAX_STEPS_PER_PROGRAM];
   int lastRunDay;
 };
+
+uint8_t parseDays(JsonArrayConst arr) {
+  if (arr.isNull() || arr.size() == 0) return 0x7F;
+  uint8_t mask = 0;
+  for (JsonVariantConst v : arr) {
+    int d = v.as<int>();
+    if (d == 7 || d == 0) {
+      mask |= (1 << 0);
+    } else if (d >= 1 && d <= 6) {
+      mask |= (1 << d);
+    }
+  }
+  return (mask == 0) ? 0x7F : mask;
+}
 
 ProgramItem programs[MAX_PROGRAMS];
 size_t programCount = 0;
@@ -117,6 +132,14 @@ void publishInfo(const char* reason) {
     p["startHour"] = programs[i].startHour;
     p["startMinute"] = programs[i].startMinute;
     p["enabled"] = programs[i].enabled;
+
+    JsonArray daysArr = p["days"].to<JsonArray>();
+    for (int d = 1; d <= 7; d++) {
+      int wday = (d == 7) ? 0 : d;
+      if (programs[i].days & (1 << wday)) {
+        daysArr.add(d);
+      }
+    }
 
     JsonArray seq = p["sequence"].to<JsonArray>();
     for (uint8_t s = 0; s < programs[i].stepCount; s++) {
@@ -278,6 +301,14 @@ bool savePrograms() {
     p["startMinute"] = programs[i].startMinute;
     p["enabled"] = programs[i].enabled;
 
+    JsonArray daysArr = p["days"].to<JsonArray>();
+    for (int d = 1; d <= 7; d++) {
+      int wday = (d == 7) ? 0 : d;
+      if (programs[i].days & (1 << wday)) {
+        daysArr.add(d);
+      }
+    }
+
     JsonArray seq = p["sequence"].to<JsonArray>();
     for (uint8_t s = 0; s < programs[i].stepCount; s++) {
       JsonObject st = seq.add<JsonObject>();
@@ -327,6 +358,7 @@ bool loadPrograms() {
     item.startHour = p["startHour"] | 0;
     item.startMinute = p["startMinute"] | 0;
     item.enabled = p["enabled"] | true;
+    item.days = parseDays(p["days"].as<JsonArrayConst>());
     item.stepCount = 0;
     item.lastRunDay = -1;
 
@@ -378,6 +410,7 @@ bool upsertProgram(const JsonObjectConst& src) {
   candidate.startHour = (uint8_t)startHour;
   candidate.startMinute = (uint8_t)startMinute;
   candidate.enabled = enabled;
+  candidate.days = parseDays(src["days"].as<JsonArrayConst>());
   candidate.stepCount = 0;
   candidate.lastRunDay = -1;
 
@@ -539,6 +572,7 @@ bool restoreBackup(const JsonObjectConst& doc) {
       }
 
       item.enabled = p["enabled"] | true;
+      item.days = parseDays(p["days"].as<JsonArrayConst>());
       item.stepCount = 0;
       item.lastRunDay = -1;
 
@@ -659,6 +693,7 @@ void processPrograms() {
     if (!programs[i].enabled) continue;
     if (programs[i].startHour != localTm.tm_hour || programs[i].startMinute != localTm.tm_min) continue;
     if (programs[i].lastRunDay == day) continue;
+    if ((programs[i].days & (1 << localTm.tm_wday)) == 0) continue;
 
     programs[i].lastRunDay = day;
     startProgramSequence((int)i, now, false);
