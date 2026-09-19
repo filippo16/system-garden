@@ -68,7 +68,9 @@ Oppure, se un programma e in esecuzione:
   ],
   "sequenceRunning": true,
   "runningProgramId": "irrigazione_mattina",
-  "runningStep": 3
+  "runningStep": 1,
+  "activeSector": 2,
+  "activeSectorName": "Settore 2 sud giro casa/nord pozzo statici"
 }
 ```
 

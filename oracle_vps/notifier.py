@@ -11,14 +11,16 @@ from telegram.constants import ParseMode
 
 from config import ALLOWED_USER_IDS
 from mqtt_manager import MQTTManager
+from cleaner import MessageCleaner
 
 logger = logging.getLogger("Notifier")
 
 
 class Notifier:
-    def __init__(self, bot: Bot, mqtt_mgr: MQTTManager):
+    def __init__(self, bot: Bot, mqtt_mgr: MQTTManager, cleaner: MessageCleaner | None = None):
         self.bot = bot
         self.mqtt = mqtt_mgr
+        self.cleaner = cleaner
         self.is_flagged_offline = False
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -29,15 +31,20 @@ class Notifier:
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
 
+    def set_cleaner(self, cleaner: MessageCleaner) -> None:
+        self.cleaner = cleaner
+
     async def broadcast(self, text: str) -> None:
-        """Invia un messaggio push a tutti gli utenti Telegram autorizzati."""
+        """Invia un messaggio push a tutti gli utenti Telegram autorizzati con auto-cancellazione a 24h."""
         for user_id in ALLOWED_USER_IDS:
             try:
-                await self.bot.send_message(
+                msg = await self.bot.send_message(
                     chat_id=user_id,
                     text=text,
                     parse_mode=ParseMode.MARKDOWN,
                 )
+                if self.cleaner and msg:
+                    self.cleaner.schedule_deletion(user_id, msg.message_id, delay_seconds=86400)
             except Exception as e:
                 logger.error(f"Impossibile inviare notifica all'utente {user_id}: {e}")
 

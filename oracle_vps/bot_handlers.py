@@ -182,7 +182,12 @@ class BotHandlers:
                 name = sector_names[i] if i < len(sector_names) else f"Settore {i+1}"
                 active_sectors.append(f"• *S{i+1}:* {name}")
 
-        active_str = "\n".join(active_sectors) if active_sectors else "• _Nessun settore attivo al momento._"
+        if active_sectors:
+            active_str = "\n".join(active_sectors)
+        elif seq_running:
+            active_str = "• _Pausa transizione tra settori (3s)..._"
+        else:
+            active_str = "• _Nessun settore attivo al momento._"
 
         return (
             "🌿 *PANNELLO IRRIGAZIONE*\n"

@@ -150,9 +150,18 @@ void publishInfo(const char* reason) {
   }
 
   out["sequenceRunning"] = sequenceRunning;
-  if (sequenceRunning && runningProgramIndex >= 0) {
+  if (runningProgramIndex >= 0 && runningProgramIndex < (int)programCount) {
     out["runningProgramId"] = programs[runningProgramIndex].id;
     out["runningStep"] = runningStepIndex + 1;
+  }
+
+  // Info settore attivo in tempo reale (1..8, oppure 0 se valvole chiuse)
+  if (activeRelayFromSequence >= 0 && activeRelayFromSequence < 8 && isRelayOn(activeRelayFromSequence)) {
+    out["activeSector"] = activeRelayFromSequence + 1;
+    out["activeSectorName"] = sectorNames[activeRelayFromSequence];
+  } else {
+    out["activeSector"] = 0;
+    out["activeSectorName"] = "";
   }
 
   String payload;
@@ -498,10 +507,7 @@ void setRelay(int relay, bool on) {
   writePCF();
 }
 
-void stopSequence() {
-  if (activeRelayFromSequence >= 0) {
-    setRelay(activeRelayFromSequence, false);
-  }
+void resetSequenceState() {
   sequenceRunning = false;
   runningProgramIndex = -1;
   runningStepIndex = 0;
@@ -509,6 +515,13 @@ void stopSequence() {
   activeRelayFromSequence = -1;
   waitingBetweenSteps = false;
   transitionPauseUntilTs = 0;
+}
+
+void stopSequence() {
+  if (activeRelayFromSequence >= 0) {
+    setRelay(activeRelayFromSequence, false);
+  }
+  resetSequenceState();
 }
 
 bool restoreBackup(const JsonObjectConst& doc) {
@@ -624,26 +637,30 @@ void startProgramSequence(int index, time_t now, bool forceStart = false) {
   runningStepIndex = 0;
   runningStepEndTs = now + (time_t)step.durationMin * 60;
   activeRelayFromSequence = step.relay;
+  waitingBetweenSteps = false;
 
   publishLog("{\"message\":\"Program started\"}");
-  publishInfo("program_started");
+  publishInfo(forceStart ? "program_test_started" : "program_started");
 }
 
 void advanceSequence(time_t now) {
   if (!sequenceRunning || runningProgramIndex < 0) return;
 
-  // Handle pause between steps
+  // 1. Gestione pausa di transizione idraulica tra settori
   if (waitingBetweenSteps) {
-    if (now < transitionPauseUntilTs) return;  // Still waiting
+    if (now < transitionPauseUntilTs) return;  // Pausa ancora in corso
 
-    // Pause finished, activate next step
+    // Pausa terminata: avanziamo lo step e apriamo la nuova valvola
     waitingBetweenSteps = false;
-    ProgramItem& p = programs[runningProgramIndex];
+    runningStepIndex++;
 
+    ProgramItem& p = programs[runningProgramIndex];
     if (runningStepIndex >= p.stepCount) {
-      stopSequence();
+      if (activeRelayFromSequence >= 0) setRelay(activeRelayFromSequence, false);
+      sequenceRunning = false;
       publishLog("{\"message\":\"Program completed\"}");
       publishInfo("program_completed");
+      resetSequenceState();
       return;
     }
 
@@ -655,20 +672,30 @@ void advanceSequence(time_t now) {
     return;
   }
 
-  // Check if current step duration is done
+  // 2. Verifica se il minutaggio dello step corrente è terminato
   if (now < runningStepEndTs) return;
 
-  // Current step done, turn off relay and enter pause
+  // Minutaggio finito: chiudiamo subito la valvola attiva
   if (activeRelayFromSequence >= 0) {
     setRelay(activeRelayFromSequence, false);
+    activeRelayFromSequence = -1;
   }
 
-  runningStepIndex++;
+  ProgramItem& p = programs[runningProgramIndex];
 
-  // Start pause before next step
-  waitingBetweenSteps = true;
-  transitionPauseUntilTs = now + STEP_TRANSITION_DELAY_SEC;
-  publishInfo("step_pause");
+  // 3. Verifichiamo se ci sono altri step successivi
+  if (runningStepIndex + 1 < p.stepCount) {
+    // Ci sono altri step: entriamo in pausa prima del prossimo settore
+    waitingBetweenSteps = true;
+    transitionPauseUntilTs = now + STEP_TRANSITION_DELAY_SEC;
+    publishInfo("step_pause");
+  } else {
+    // Ultimo step completato: il programma termina immediatamente (nessuna pausa fantasma)
+    sequenceRunning = false;
+    publishLog("{\"message\":\"Program completed\"}");
+    publishInfo("program_completed");
+    resetSequenceState();
+  }
 }
 
 void processPrograms() {
@@ -724,8 +751,6 @@ bool startProgramById(const String& id, bool forceStart = true) {
     return false;
   }
 
-  publishLog("{\"message\":\"Program test started\"}");
-  publishInfo("program_test_started");
   return true;
 }
 
@@ -784,8 +809,14 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
   }
 
   if (action == "stop_program") {
-    stopSequence();
+    if (activeRelayFromSequence >= 0) {
+      setRelay(activeRelayFromSequence, false);
+      activeRelayFromSequence = -1;
+    }
+    sequenceRunning = false;
+    waitingBetweenSteps = false;
     publishInfo("program_stopped");
+    resetSequenceState();
     return;
   }
 
