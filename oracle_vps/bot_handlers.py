@@ -15,6 +15,7 @@ from telegram.ext import ContextTypes
 
 from config import is_user_allowed, ALLOWED_USER_IDS
 from mqtt_manager import MQTTManager
+from cleaner import MessageCleaner
 
 logger = logging.getLogger("BotHandlers")
 DIVIDER = "───────────────────"  # 19 caratteri (esattamente 1 in meno per display mobile)
@@ -29,40 +30,35 @@ def authorized_only(func: Callable):
             if isinstance(arg, Update):
                 update = arg
                 break
-        if update is None:
-            update = kwargs.get("update")
 
         if not update:
             return await func(*args, **kwargs)
 
-        user = update.effective_user
-        if not user or not is_user_allowed(user.id):
-            uid = user.id if user else "Sconosciuto"
-            uname = user.username if user and user.username else "N/A"
-            logger.warning(f"Tentativo di accesso NON autorizzato: ID={uid}, username=@{uname}")
+        user_id = update.effective_user.id if update.effective_user else None
+        if user_id and is_user_allowed(user_id):
+            return await func(*args, **kwargs)
 
-            msg_text = (
-                "⛔ *Accesso Negato*\n\n"
-                f"Il tuo account Telegram (ID: `{uid}`) non è autorizzato ad utilizzare questa centralina.\n"
-                "Aggiungi questo ID a `ALLOWED_USER_IDS` nel file `.env` della VPS per abilitarlo."
+        logger.warning(f"Accesso negato per utente non autorizzato ID: {user_id}")
+        if update.callback_query:
+            await update.callback_query.answer(
+                "⛔ Non sei autorizzato a usare questa centralina.",
+                show_alert=True,
             )
-            if update.callback_query:
-                await update.callback_query.answer("⛔ Accesso non autorizzato.", show_alert=True)
-                try:
-                    await update.callback_query.edit_message_text(msg_text, parse_mode=ParseMode.MARKDOWN)
-                except Exception:
-                    pass
-            elif update.message:
-                await update.message.reply_text(msg_text, parse_mode=ParseMode.MARKDOWN)
-            return
+        elif update.message:
+            msg_text = (
+                "⛔ *Accesso Negato*\n"
+                f"Il tuo Telegram ID (`{user_id}`) non è autorizzato a controllare questo impianto."
+            )
+            await update.message.reply_text(msg_text, parse_mode=ParseMode.MARKDOWN)
+        return None
 
-        return await func(*args, **kwargs)
     return wrapper
 
 
 class BotHandlers:
-    def __init__(self, mqtt_mgr: MQTTManager):
+    def __init__(self, mqtt_mgr: MQTTManager, cleaner: MessageCleaner | None = None):
         self.mqtt = mqtt_mgr
+        self.cleaner = cleaner
         self.bot: Bot | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         # Traccia le sessioni aperte: user_id -> {"chat_id": int, "message_id": int, "view": str}
@@ -74,8 +70,15 @@ class BotHandlers:
     def set_bot(self, bot: Bot) -> None:
         self.bot = bot
 
+    def set_cleaner(self, cleaner: MessageCleaner) -> None:
+        self.cleaner = cleaner
+
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
+
+    def _schedule_auto_delete(self, chat_id: int, message_id: int, delay_seconds: int = 86400) -> None:
+        if self.cleaner:
+            self.cleaner.schedule_deletion(chat_id, message_id, delay_seconds)
 
     @staticmethod
     def _format_esp_time(raw_ts: str) -> str:
@@ -423,49 +426,91 @@ class BotHandlers:
     # -------------------------------------------------------------
     @authorized_only
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Invia un unico pannello di controllo interattivo."""
+        """Invia un unico pannello di controllo interattivo, eliminando vecchie dashboard e comandi utente."""
         self.mqtt.request_info()
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
 
+        # 1. Elimina il comando /start o /menu digitato dall'utente
+        if update.message:
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+
+        # 2. Elimina la vecchia dashboard per assicurare che la nuova sia l'ultimo messaggio assoluto
+        if user_id in self.user_sessions:
+            old_session = self.user_sessions.pop(user_id, None)
+            if old_session and self.bot:
+                try:
+                    await self.bot.delete_message(chat_id=old_session["chat_id"], message_id=old_session["message_id"])
+                except Exception:
+                    pass
+
+        # 3. Invia la nuova dashboard attiva
         text, reply_markup = self._get_view_content("main")
-        msg = await update.message.reply_text(
-            text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=reply_markup,
-        )
-        self.user_sessions[user_id] = {"chat_id": chat_id, "message_id": msg.message_id, "view": "main"}
+        if self.bot:
+            msg = await self.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup,
+            )
+            self.user_sessions[user_id] = {"chat_id": chat_id, "message_id": msg.message_id, "view": "main"}
 
     @authorized_only
     async def cmd_stato(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Reindirizza al menu di stato."""
+        """Reindirizza al menu di stato aggiornando la dashboard in-place ed eliminando il comando."""
         self.mqtt.request_info()
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
 
-        text, reply_markup = self._get_view_content("status")
-        msg = await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-        self.user_sessions[user_id] = {"chat_id": chat_id, "message_id": msg.message_id, "view": "status"}
+        if update.message:
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+
+        if user_id in self.user_sessions:
+            s = self.user_sessions[user_id]
+            await self._render_view(user_id, s["chat_id"], s["message_id"], "status")
+        else:
+            text, reply_markup = self._get_view_content("status")
+            if self.bot:
+                msg = await self.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+                self.user_sessions[user_id] = {"chat_id": chat_id, "message_id": msg.message_id, "view": "status"}
 
     @authorized_only
     async def cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Esegue stop e aggiorna il menu dell'utente se presente, senza messaggi duplicati."""
+        """Esegue stop, aggiorna il menu e auto-elimina l'eventuale messaggio di conferma."""
         self.mqtt.stop_program()
-        # Ottimizzazione locale immediata
         if self.mqtt.last_info_data:
             self.mqtt.last_info_data["sequenceRunning"] = False
             self.mqtt.last_info_data["relays"] = [False] * 8
 
         user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+
+        if update.message:
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+
         if user_id in self.user_sessions:
             s = self.user_sessions[user_id]
             await self._render_view(user_id, s["chat_id"], s["message_id"], s.get("view", "main"))
-            await update.message.reply_text("🛑 *STOP eseguito!* Il menu sopra è stato aggiornato.", parse_mode=ParseMode.MARKDOWN)
+            if self.bot:
+                msg = await self.bot.send_message(chat_id=chat_id, text="🛑 *STOP eseguito!* Pannello aggiornato.", parse_mode=ParseMode.MARKDOWN)
+                self._schedule_auto_delete(chat_id, msg.message_id, delay_seconds=10)
         else:
-            await update.message.reply_text("🛑 *STOP Emergenza inviato alla centralina!*", parse_mode=ParseMode.MARKDOWN)
+            if self.bot:
+                msg = await self.bot.send_message(chat_id=chat_id, text="🛑 *STOP Emergenza inviato alla centralina!*", parse_mode=ParseMode.MARKDOWN)
+                self._schedule_auto_delete(chat_id, msg.message_id, delay_seconds=10)
 
     @authorized_only
     async def cmd_pioggia(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Inverte la modalità pioggia, aggiorna la dashboard ed elimina il testo digitato."""
         state = self.mqtt.get_state()
         new_mode = not state.get("rainMode", False) if state else True
         self.mqtt.set_rain_mode(new_mode)
@@ -473,24 +518,47 @@ class BotHandlers:
             self.mqtt.last_info_data["rainMode"] = new_mode
 
         user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+
+        if update.message:
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+
         desc = "ATTIVATA 🔴" if new_mode else "DISATTIVATA 🟢"
         if user_id in self.user_sessions:
             s = self.user_sessions[user_id]
             await self._render_view(user_id, s["chat_id"], s["message_id"], s.get("view", "main"))
-            await update.message.reply_text(f"🌧️ *Modalità Pioggia {desc}!*\nPannello sopra aggiornato.", parse_mode=ParseMode.MARKDOWN)
+            if self.bot:
+                msg = await self.bot.send_message(chat_id=chat_id, text=f"🌧️ *Modalità Pioggia {desc}!*", parse_mode=ParseMode.MARKDOWN)
+                self._schedule_auto_delete(chat_id, msg.message_id, delay_seconds=10)
         else:
-            await update.message.reply_text(f"🌧️ *Modalità Pioggia {desc}*", parse_mode=ParseMode.MARKDOWN)
+            if self.bot:
+                msg = await self.bot.send_message(chat_id=chat_id, text=f"🌧️ *Modalità Pioggia {desc}*", parse_mode=ParseMode.MARKDOWN)
+                self._schedule_auto_delete(chat_id, msg.message_id, delay_seconds=10)
 
     @authorized_only
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Invia la guida rapida e la programma per l'auto-eliminazione a 60 secondi."""
+        chat_id = update.effective_chat.id
+        if update.message:
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+
         help_text = (
             "📖 *Guida Rapida Centralina Irrigazione*\n\n"
             "• Invia `/menu` per aprire il pannello di controllo interattivo.\n"
             "• Tutti i comandi si gestiscono premendo i pulsanti direttamente nel messaggio.\n"
             "• Lo stato dei settori si aggiorna in tempo reale senza intasare la chat.\n"
-            "• In caso di necessità puoi sempre inviare `/stop` per arrestare tutto all'istante."
+            "• In caso di necessità puoi sempre inviare `/stop` per arrestare tutto all'istante.\n\n"
+            "_(Questo messaggio di aiuto si auto-eliminerà a breve per mantenere la chat pulita)_"
         )
-        await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+        if self.bot:
+            msg = await self.bot.send_message(chat_id=chat_id, text=help_text, parse_mode=ParseMode.MARKDOWN)
+            self._schedule_auto_delete(chat_id, msg.message_id, delay_seconds=60)
 
     # -------------------------------------------------------------
     # Gestione Callback Query (Click sui bottoni inline)
