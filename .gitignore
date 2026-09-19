@@ -7,4 +7,6 @@
 *.env
 __pycache__/
 *.pyc
+pending_deletions.json
+*.tmp
 

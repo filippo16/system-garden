@@ -16,6 +16,7 @@ from config import TELEGRAM_BOT_TOKEN, validate_config
 from mqtt_manager import MQTTManager
 from bot_handlers import BotHandlers
 from notifier import Notifier
+from cleaner import MessageCleaner
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -40,26 +41,30 @@ def main() -> None:
     mqtt_mgr = MQTTManager()
     mqtt_mgr.start()
 
-    # 3. Creazione Bot Handlers
-    handlers = BotHandlers(mqtt_mgr)
+    # 3. Inizializzazione Message Cleaner (Auto-cancellazione messaggi dopo 24h)
+    cleaner = MessageCleaner()
 
-    # 4. Costruzione applicazione Telegram
+    # 4. Creazione Bot Handlers
+    handlers = BotHandlers(mqtt_mgr, cleaner=cleaner)
+
+    # 5. Costruzione applicazione Telegram
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # 5. Notifier e Dead Man's Switch
-    notifier = Notifier(app.bot, mqtt_mgr)
+    # 6. Notifier
+    notifier = Notifier(app.bot, mqtt_mgr, cleaner=cleaner)
 
     async def on_startup(application: Application) -> None:
         loop = asyncio.get_running_loop()
+        cleaner.set_bot(application.bot)
+        await cleaner.start()
         handlers.set_bot(application.bot)
         handlers.set_event_loop(loop)
         notifier.set_event_loop(loop)
-        logger.info("Servizio Notifier e Handlers Telegram avviati.")
-
-
+        logger.info("Servizio Notifier, Cleaner e Handlers Telegram avviati.")
 
     async def on_shutdown(application: Application) -> None:
         logger.info("Arresto in corso...")
+        await cleaner.stop()
         mqtt_mgr.stop()
 
     app.post_init = on_startup
