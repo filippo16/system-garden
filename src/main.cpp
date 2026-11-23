@@ -19,6 +19,7 @@ const char* TOPIC_COMMAND = "command";
 const char* TOPIC_INFO = "info";
 const char* TOPIC_LOG = "log";
 const uint16_t MQTT_BUFFER_SIZE = 4096;
+const char* MQTT_LWT_MESSAGE = "{\"error\":\"ESP8266 disconnected unexpectedly (LWT)\"}";
 
 const char* PROGRAM_FILE = "/programs.json";
 const char* SETTINGS_FILE = "/settings.json";
@@ -58,10 +59,25 @@ struct ProgramItem {
   uint8_t startHour;    // 0..23
   uint8_t startMinute;  // 0..59
   bool enabled;
+  uint8_t days;         // bitmask: bit 0=Dom, bit 1=Lun, ..., bit 6=Sab (0x7F = tutti i giorni)
   uint8_t stepCount;
   ProgramStep steps[MAX_STEPS_PER_PROGRAM];
   int lastRunDay;
 };
+
+uint8_t parseDays(JsonArrayConst arr) {
+  if (arr.isNull() || arr.size() == 0) return 0x7F;
+  uint8_t mask = 0;
+  for (JsonVariantConst v : arr) {
+    int d = v.as<int>();
+    if (d == 7 || d == 0) {
+      mask |= (1 << 0);
+    } else if (d >= 1 && d <= 6) {
+      mask |= (1 << d);
+    }
+  }
+  return (mask == 0) ? 0x7F : mask;
+}
 
 ProgramItem programs[MAX_PROGRAMS];
 size_t programCount = 0;
@@ -117,6 +133,14 @@ void publishInfo(const char* reason) {
     p["startMinute"] = programs[i].startMinute;
     p["enabled"] = programs[i].enabled;
 
+    JsonArray daysArr = p["days"].to<JsonArray>();
+    for (int d = 1; d <= 7; d++) {
+      int wday = (d == 7) ? 0 : d;
+      if (programs[i].days & (1 << wday)) {
+        daysArr.add(d);
+      }
+    }
+
     JsonArray seq = p["sequence"].to<JsonArray>();
     for (uint8_t s = 0; s < programs[i].stepCount; s++) {
       JsonObject st = seq.add<JsonObject>();
@@ -126,9 +150,18 @@ void publishInfo(const char* reason) {
   }
 
   out["sequenceRunning"] = sequenceRunning;
-  if (sequenceRunning && runningProgramIndex >= 0) {
+  if (runningProgramIndex >= 0 && runningProgramIndex < (int)programCount) {
     out["runningProgramId"] = programs[runningProgramIndex].id;
     out["runningStep"] = runningStepIndex + 1;
+  }
+
+  // Info settore attivo in tempo reale (1..8, oppure 0 se valvole chiuse)
+  if (activeRelayFromSequence >= 0 && activeRelayFromSequence < 8 && isRelayOn(activeRelayFromSequence)) {
+    out["activeSector"] = activeRelayFromSequence + 1;
+    out["activeSectorName"] = sectorNames[activeRelayFromSequence];
+  } else {
+    out["activeSector"] = 0;
+    out["activeSectorName"] = "";
   }
 
   String payload;
@@ -277,6 +310,14 @@ bool savePrograms() {
     p["startMinute"] = programs[i].startMinute;
     p["enabled"] = programs[i].enabled;
 
+    JsonArray daysArr = p["days"].to<JsonArray>();
+    for (int d = 1; d <= 7; d++) {
+      int wday = (d == 7) ? 0 : d;
+      if (programs[i].days & (1 << wday)) {
+        daysArr.add(d);
+      }
+    }
+
     JsonArray seq = p["sequence"].to<JsonArray>();
     for (uint8_t s = 0; s < programs[i].stepCount; s++) {
       JsonObject st = seq.add<JsonObject>();
@@ -326,6 +367,7 @@ bool loadPrograms() {
     item.startHour = p["startHour"] | 0;
     item.startMinute = p["startMinute"] | 0;
     item.enabled = p["enabled"] | true;
+    item.days = parseDays(p["days"].as<JsonArrayConst>());
     item.stepCount = 0;
     item.lastRunDay = -1;
 
@@ -377,6 +419,7 @@ bool upsertProgram(const JsonObjectConst& src) {
   candidate.startHour = (uint8_t)startHour;
   candidate.startMinute = (uint8_t)startMinute;
   candidate.enabled = enabled;
+  candidate.days = parseDays(src["days"].as<JsonArrayConst>());
   candidate.stepCount = 0;
   candidate.lastRunDay = -1;
 
@@ -464,10 +507,7 @@ void setRelay(int relay, bool on) {
   writePCF();
 }
 
-void stopSequence() {
-  if (activeRelayFromSequence >= 0) {
-    setRelay(activeRelayFromSequence, false);
-  }
+void resetSequenceState() {
   sequenceRunning = false;
   runningProgramIndex = -1;
   runningStepIndex = 0;
@@ -475,6 +515,13 @@ void stopSequence() {
   activeRelayFromSequence = -1;
   waitingBetweenSteps = false;
   transitionPauseUntilTs = 0;
+}
+
+void stopSequence() {
+  if (activeRelayFromSequence >= 0) {
+    setRelay(activeRelayFromSequence, false);
+  }
+  resetSequenceState();
 }
 
 bool restoreBackup(const JsonObjectConst& doc) {
@@ -538,6 +585,7 @@ bool restoreBackup(const JsonObjectConst& doc) {
       }
 
       item.enabled = p["enabled"] | true;
+      item.days = parseDays(p["days"].as<JsonArrayConst>());
       item.stepCount = 0;
       item.lastRunDay = -1;
 
@@ -589,26 +637,30 @@ void startProgramSequence(int index, time_t now, bool forceStart = false) {
   runningStepIndex = 0;
   runningStepEndTs = now + (time_t)step.durationMin * 60;
   activeRelayFromSequence = step.relay;
+  waitingBetweenSteps = false;
 
   publishLog("{\"message\":\"Program started\"}");
-  publishInfo("program_started");
+  publishInfo(forceStart ? "program_test_started" : "program_started");
 }
 
 void advanceSequence(time_t now) {
   if (!sequenceRunning || runningProgramIndex < 0) return;
 
-  // Handle pause between steps
+  // 1. Gestione pausa di transizione idraulica tra settori
   if (waitingBetweenSteps) {
-    if (now < transitionPauseUntilTs) return;  // Still waiting
+    if (now < transitionPauseUntilTs) return;  // Pausa ancora in corso
 
-    // Pause finished, activate next step
+    // Pausa terminata: avanziamo lo step e apriamo la nuova valvola
     waitingBetweenSteps = false;
-    ProgramItem& p = programs[runningProgramIndex];
+    runningStepIndex++;
 
+    ProgramItem& p = programs[runningProgramIndex];
     if (runningStepIndex >= p.stepCount) {
-      stopSequence();
+      if (activeRelayFromSequence >= 0) setRelay(activeRelayFromSequence, false);
+      sequenceRunning = false;
       publishLog("{\"message\":\"Program completed\"}");
       publishInfo("program_completed");
+      resetSequenceState();
       return;
     }
 
@@ -620,20 +672,30 @@ void advanceSequence(time_t now) {
     return;
   }
 
-  // Check if current step duration is done
+  // 2. Verifica se il minutaggio dello step corrente è terminato
   if (now < runningStepEndTs) return;
 
-  // Current step done, turn off relay and enter pause
+  // Minutaggio finito: chiudiamo subito la valvola attiva
   if (activeRelayFromSequence >= 0) {
     setRelay(activeRelayFromSequence, false);
+    activeRelayFromSequence = -1;
   }
 
-  runningStepIndex++;
+  ProgramItem& p = programs[runningProgramIndex];
 
-  // Start pause before next step
-  waitingBetweenSteps = true;
-  transitionPauseUntilTs = now + STEP_TRANSITION_DELAY_SEC;
-  publishInfo("step_pause");
+  // 3. Verifichiamo se ci sono altri step successivi
+  if (runningStepIndex + 1 < p.stepCount) {
+    // Ci sono altri step: entriamo in pausa prima del prossimo settore
+    waitingBetweenSteps = true;
+    transitionPauseUntilTs = now + STEP_TRANSITION_DELAY_SEC;
+    publishInfo("step_pause");
+  } else {
+    // Ultimo step completato: il programma termina immediatamente (nessuna pausa fantasma)
+    sequenceRunning = false;
+    publishLog("{\"message\":\"Program completed\"}");
+    publishInfo("program_completed");
+    resetSequenceState();
+  }
 }
 
 void processPrograms() {
@@ -658,6 +720,7 @@ void processPrograms() {
     if (!programs[i].enabled) continue;
     if (programs[i].startHour != localTm.tm_hour || programs[i].startMinute != localTm.tm_min) continue;
     if (programs[i].lastRunDay == day) continue;
+    if ((programs[i].days & (1 << localTm.tm_wday)) == 0) continue;
 
     programs[i].lastRunDay = day;
     startProgramSequence((int)i, now, false);
@@ -688,8 +751,6 @@ bool startProgramById(const String& id, bool forceStart = true) {
     return false;
   }
 
-  publishLog("{\"message\":\"Program test started\"}");
-  publishInfo("program_test_started");
   return true;
 }
 
@@ -748,8 +809,14 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
   }
 
   if (action == "stop_program") {
-    stopSequence();
+    if (activeRelayFromSequence >= 0) {
+      setRelay(activeRelayFromSequence, false);
+      activeRelayFromSequence = -1;
+    }
+    sequenceRunning = false;
+    waitingBetweenSteps = false;
     publishInfo("program_stopped");
+    resetSequenceState();
     return;
   }
 
@@ -843,7 +910,7 @@ void handleMqtt() {
   if (now - lastMqttAttemptMs >= MQTT_RETRY_INTERVAL_MS) {
     lastMqttAttemptMs = now;
 
-    if (mqttClient.connect(CLIENT_ID, MQTT_USER, MQTT_PASS)) {
+    if (mqttClient.connect(CLIENT_ID, MQTT_USER, MQTT_PASS, TOPIC_LOG, 1, false, MQTT_LWT_MESSAGE)) {
       mqttClient.subscribe(TOPIC_COMMAND);
 
       if (mqttWasConnected) {
@@ -883,7 +950,7 @@ void setup() {
   mqttClient.setCallback(onMqttMessage);
 
   if (WiFi.status() == WL_CONNECTED) {
-    if (mqttClient.connect(CLIENT_ID, MQTT_USER, MQTT_PASS)) {
+    if (mqttClient.connect(CLIENT_ID, MQTT_USER, MQTT_PASS, TOPIC_LOG, 1, false, MQTT_LWT_MESSAGE)) {
       mqttClient.subscribe(TOPIC_COMMAND);
       mqttWasConnected = true;
       publishInfo("connected");

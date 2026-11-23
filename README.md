@@ -4,7 +4,7 @@ Firmware PlatformIO per un ESP8266 che gestisce un sistema di irrigazione domest
 
 ## Documentazione principale
 
-- [PROJECT.md](PROJECT.md) — contesto completo per agent AI e manutenzione del progetto
+- [PROJECT.md](PROJECT.md) — contesto completo per manutenzione del progetto
 - [MQTT_COMMANDS.md](MQTT_COMMANDS.md) — lista dei comandi MQTT supportati
 - [ARCHITECTURE_TELEGRAM_VPS.md](ARCHITECTURE_TELEGRAM_VPS.md) — architettura VPS, integrazione Telegram e resilienza offline
 
@@ -19,9 +19,10 @@ Firmware PlatformIO per un ESP8266 che gestisce un sistema di irrigazione domest
 
 ## File chiave
 
-- [src/main.cpp](src/main.cpp) — firmware principale
+- [src/main.cpp](src/main.cpp) — firmware principale ESP8266
 - [platformio.ini](platformio.ini) — configurazione PlatformIO
 - [data/index.html](data/index.html) — dashboard web MQTT di controllo
+- [oracle_vps/](oracle_vps/) — servizio supervisore VPS con Bot Telegram, Whitelist ID e Dead Man's Switch
 
 ## Build
 
@@ -29,7 +30,3 @@ Firmware PlatformIO per un ESP8266 che gestisce un sistema di irrigazione domest
 pio run
 pio run --target upload
 ```
-
-## Usa il progetto come contesto per un agente AI
-
-Leggi prima [PROJECT.md](PROJECT.md), perché contiene la definizione del dominio applicativo, gli schemi MQTT, le regole di irrigazione e i punti critici del firmware.

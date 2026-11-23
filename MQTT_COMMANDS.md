@@ -35,6 +35,7 @@ Esempio di output su `info`:
       "startHour": 6,
       "startMinute": 30,
       "enabled": true,
+      "days": [1, 2, 3, 4, 5, 6, 7],
       "sequence": [
         { "relay": 2, "duration": 10 },
         { "relay": 4, "duration": 7 }
@@ -67,7 +68,9 @@ Oppure, se un programma e in esecuzione:
   ],
   "sequenceRunning": true,
   "runningProgramId": "irrigazione_mattina",
-  "runningStep": 3
+  "runningStep": 1,
+  "activeSector": 2,
+  "activeSectorName": "Settore 2 sud giro casa/nord pozzo statici"
 }
 ```
 
@@ -81,6 +84,7 @@ Payload su `command`:
   "id": "irrigazione_mattina",
   "start": { "hour": 6, "minute": 30 },
   "enabled": true,
+  "days": [1, 3, 5],
   "sequence": [
     { "relay": 2, "duration": 10 },
     { "relay": 4, "duration": 7 },
@@ -94,6 +98,10 @@ Regole:
 - `start.hour`: 0..23
 - `start.minute`: 0..59
 - `enabled`: true/false
+- `days`: (opzionale) array di interi indicanti i giorni settimanali in cui eseguire il programma:
+  - Convenzione standard ISO 8601 raccomandata: `1` = Lunedì, `2` = Martedì, `3` = Mercoledì, `4` = Giovedì, `5` = Venerdì, `6` = Sabato, `7` = Domenica.
+  - È accettata anche la convenzione C (`0` = Domenica, `1` = Lunedì, ..., `6` = Sabato).
+  - Se il campo viene omesso o fornito vuoto `[]`, il programma sarà attivo **tutti i giorni** (`[1, 2, 3, 4, 5, 6, 7]`).
 - `sequence`: lista step in serie
 - Ogni step:
   - `relay`: 1..8 (accettato anche 0..7 internamente)
@@ -101,7 +109,7 @@ Regole:
 
 Effetto:
 - Salva (o aggiorna) il programma in `/programs.json`.
-- All'orario di start, esegue la sequenza in serie (un relay per volta).
+- All'orario di start, esegue la sequenza in serie se il giorno corrente della settimana è incluso in `days`.
 
 Esempio di output su `info` dopo il salvataggio:
 
@@ -116,6 +124,7 @@ Esempio di output su `info` dopo il salvataggio:
       "startHour": 6,
       "startMinute": 30,
       "enabled": true,
+      "days": [1, 3, 5],
       "sequence": [
         { "relay": 2, "duration": 10 },
         { "relay": 4, "duration": 7 },
@@ -482,6 +491,7 @@ Esempio di output su `info`:
       "startHour": 6,
       "startMinute": 30,
       "enabled": true,
+      "days": [1, 2, 3, 4, 5, 6, 7],
       "sequence": [
         { "relay": 1, "duration": 10 },
         { "relay": 2, "duration": 15 }
@@ -517,6 +527,7 @@ Payload su `command`:
       "startHour": 6,
       "startMinute": 30,
       "enabled": true,
+      "days": [1, 2, 3, 4, 5, 6, 7],
       "sequence": [
         { "relay": 1, "duration": 10 },
         { "relay": 2, "duration": 15 }

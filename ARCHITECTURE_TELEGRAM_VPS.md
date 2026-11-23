@@ -1,25 +1,30 @@
 # Architettura Sistema di Irrigazione: Integrazione Telegram & VPS
 
-Questo documento riassume l'analisi architetturale, le raccomandazioni e le linee guida per integrare un **Bot Telegram** e un **Server VPS** con il controller di irrigazione basato su **ESP8266**, garantendo al contempo la **completa autonomia di funzionamento offline (senza internet)**.
+Questo documento descrive l'architettura implementata del sistema di irrigazione, l'integrazione del **Bot Telegram supervisore su VPS** e le garanzie di **completa autonomia offline** del controller **ESP8266**.
+
+> [!NOTE]
+> **Stato del Progetto:** **IMPLEMENTATO E OPERATIVO ✅**  
+> Il servizio cloud è disponibile nella cartella [`oracle_vps/`](oracle_vps/) ed il firmware aggiornato è in [`src/main.cpp`](src/main.cpp).
 
 ---
 
 ## 1. Visione Architetturale: *Local Autonomy, Cloud Supervision*
 
-Per un sistema critico come l'irrigazione automatica da giardino, l'approccio raccomandato è separare nettamente le responsabilità tra **Edge (ESP8266)** e **Cloud (VPS)**:
+Il sistema adotta un modello ibrido **Edge-Computing con Supervisione Cloud**:
 
 ```
                           ┌──────────────────────────┐
                           │     Utente (Telegram)    │
                           └─────────────┬────────────┘
-                                        │ HTTPS
+                                        │ HTTPS (Pannello In-Place, Notifiche Push)
                                         ▼
  ┌────────────────────────────────────────────────────────────────────────┐
- │                              VPS / SERVER                              │
- │  • Bot Telegram (ricezione comandi, menu bottoni, invio notifiche)     │
- │  • Dead Man's Switch (Allarme se l'ESP si disconnette/spegne)          │
- │  • Smart Rain Mode (interrogazione API meteo es. Open-Meteo)           │
- │  • Storico & Statistiche (database persistente es. SQLite / InfluxDB)  │
+ │                   VPS / SERVER DOCKER (`oracle_vps/`)                  │
+ │  • Whitelist Rigida: autorizza solo gli ID utente in .env              │
+ │  • Pannello In-Place: aggiornamento real-time senza messaggi duplicati │
+ │  • Popup Modali di Blocco: avvisi nativi se pioggia è attiva           │
+ │  • Dead Man's Switch: allarme se l'ESP non risponde da oltre 15 min    │
+ │  • Bridge MQTT over TLS 8883 (connessione in uscita verso HiveMQ)      │
  └──────────────────────────────────────┬─────────────────────────────────┘
                                         │ MQTT over TLS (8883)
                                         ▼
@@ -31,126 +36,93 @@ Per un sistema critico come l'irrigazione automatica da giardino, l'approccio ra
                                         ▼
  ┌────────────────────────────────────────────────────────────────────────┐
  │                    ESP8266 (CONTROLLER DI BORDO)                       │
- │  • Schedulazione locale dei programmi su LittleFS (`/programs.json`)   │
+ │  • Schedulazione locale programmi su LittleFS (`/programs.json`)       │
  │  • Macchina a stati sequenze (tempi, transizioni 3s tra settori)       │
  │  • Pilotaggio hardware 8 relay via I2C / PCF8574                       │
- │  • TOTALE AUTONOMIA: funziona anche a Internet spento o assente        │
+ │  • Riconnessione non bloccante Wi-Fi/MQTT basata su millis()           │
+ │  • Last Will and Testament (LWT) su topic log per allarmi immediati    │
+ │  • TOTALE AUTONOMIA: irriga regolarmente anche a Internet/VPS spenti   │
  └────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Perché conviene usare una VPS per il Bot Telegram?
+## 2. Perché la VPS alleggerisce l'ESP8266
 
-1. **Criticità Memoria RAM sull'ESP8266:**
-   - L'ESP8266 possiede risorse di RAM molto limitate (~30–40 KB liberi).
-   - Il firmware attuale utilizza già `WiFiClientSecure` con cifratura TLS BearSSL per HiveMQ Cloud e un buffer MQTT di 4096 byte.
-   - Gestire una seconda connessione HTTPS/TLS concorrente verso `api.telegram.org` (e relativo polling o webhook) rischierebbe crash per Out-Of-Memory (OOM) o Watchdog Reset (WDT).
-2. **Disaccoppiamento Totale:**
-   - L'ESP8266 non deve conoscere Telegram né implementare protocolli aggiuntivi: continua semplicemente a pubblicare sui topic `info` e `log` e a ricevere da `command`.
-   - La VPS si comporta come un normale client MQTT connesso allo stesso broker.
-3. **Dead Man's Switch (Monitoraggio Guasti & Blackout):**
-   - Se l'ESP8266 perde alimentazione o il Wi-Fi di casa smette di funzionare, l'ESP non è in grado di inviare alcun messaggio.
-   - La VPS, rilevando l'assenza di messaggi o tramite il meccanismo **MQTT LWT (Last Will and Testament)**, può notificare tempestivamente l'utente su Telegram (*"⚠️ Allarme: ESP8266 offline da oltre 5 minuti"*).
+1. **Protezione della memoria RAM dell'ESP8266:**
+   - L'ESP8266 dispone di circa 30–40 KB di RAM libera.
+   - Gestisce già la crittografia TLS (BearSSL) verso HiveMQ Cloud e un buffer MQTT di 4096 byte.
+   - Gestire anche connessioni HTTPS verso `api.telegram.org` (polling, certificati SSL Telegram e parsing JSON) porterebbe a crash per Out-Of-Memory (OOM) o reset del Watchdog (WDT).
+   - Con la VPS, l'ESP non sa nemmeno cosa sia Telegram e continua a usare solo il suo leggero canale MQTT.
+2. **Disaccoppiamento e Concorrenza:**
+   - L'ESP8266 risponde al broker con un solo listener. La VPS fa da proxy, consentendo a più utenti autorizzati di consultare lo stato senza appesantire il microcontrollore.
+3. **Dead Man's Switch (Allarme Blackout/Guasto):**
+   - Se salta la corrente a casa o cade il router, l'ESP si spegne e non può inviare allarmi.
+   - La VPS rileva l'assenza di messaggi (o riceve il messaggio LWT da HiveMQ) e avverte tempestivamente l'utente: *"⚠️ Centralina Irrigazione OFFLINE!"*.
 
 ---
 
 ## 3. Suddivisione delle Responsabilità
 
-### Cosa DEVE rimanere sull'ESP8266 (Edge)
+### Assegnato all'ESP8266 (Edge)
 * **Programmi e Schedulatore:** File `programs.json` e `settings.json` persistiti su LittleFS.
-* **Macchina a stati dei Relay:** Avanzamento sequenze, rispetto della durata dei settori, ritardo di sicurezza (`STEP_TRANSITION_DELAY_SEC = 3s`), blocco di sicurezza se `rainMode` è attivo.
-* **Protezioni Hardware:** Chiusura automatica dei relay al termine dei minuti impostati senza dipendere da comandi remoti.
+* **Macchina a stati dei Relè:** Avanzamento sequenze, rispetto della durata dei settori, ritardo di sicurezza (`STEP_TRANSITION_DELAY_SEC = 3s`), blocco di sicurezza se `rainMode` è attivo.
+* **Autonomia totale:** Continua ad irrigare anche se la VPS è spenta o internet è assente.
 
-### Cosa SPOSTARE sulla VPS (Cloud / Home Server)
-* **Bot Telegram Interattivo:** Gestione comandi (`/stato`, `/irriga`, `/stop`, `/pioggia`), tastiere inline, autorizzazione utenti tramite whitelist di `chat_id`.
-* **Notifiche Push & Allarmi:** Parsing dei messaggi su topic `log` (es. errori, blocchi rain mode) e inoltro immediato su Telegram con icone e formattazione chiara.
-* **Smart Weather (Previsioni Meteo):** Script che controlla una volta al giorno le previsioni meteo locali (es. Open-Meteo) e imposta automaticamente il `rainMode` via MQTT se sono previste piogge significative.
-* **Storico & Metriche:** Memorizzazione delle sessioni di irrigazione su database senza consumare i cicli di scrittura della memoria flash dell'ESP8266.
-
----
-
-## 4. Punti Critici da Sistemare nel Firmware per il Funzionamento Offline
-
-Nel firmware attuale ([src/main.cpp](src/main.cpp)) sono presenti due punti di attenzione essenziali per garantire la resilienza senza internet:
-
-### ⚠️ Criticità 1: Loop bloccante durante la riconnessione MQTT
-Attualmente in `connectMqtt()` è presente un ciclo `while` con `delay(2000)`:
-```cpp
-// ATTUALE (Bloccante)
-void connectMqtt(bool isReconnect) {
-  while (!mqttClient.connected()) {
-    if (mqttClient.connect(...)) { ... }
-    else { delay(2000); }
-  }
-}
-```
-* **Problema:** Se il Wi-Fi domestico è attivo ma la connessione internet esterna cade, `connectMqtt()` blocca l'esecuzione di `loop()`, impedendo a `processPrograms()` di far partire o avanzare l'irrigazione.
-* **Soluzione Raccomandata:** Rendere la riconnessione **non bloccante** tramite controllo a intervalli basato su `millis()`:
-```cpp
-// SOLUZIONE NON BLOCCANTE (Esempio)
-unsigned long lastMqttAttempt = 0;
-void handleMqttConnection() {
-  if (mqttClient.connected()) return;
-  if (millis() - lastMqttAttempt > 10000) { // Tenta ogni 10 secondi
-    lastMqttAttempt = millis();
-    mqttClient.connect(CLIENT_ID, MQTT_USER, MQTT_PASS);
-  }
-}
-```
-
-### ⚠️ Criticità 2: Sincronizzazione Oraria (NTP) al Boot
-Attualmente il controllo dei programmi richiede che l'orologio sia sincronizzato con i server NTP:
-```cpp
-time_t now = time(nullptr);
-if (now < 100000) return; // Se non sincronizzato, l'irrigazione non parte
-```
-* **Problema:** Se l'ESP8266 si riavvia in assenza di internet (es. dopo un blackout), non può sincronizzare l'ora via NTP e i programmi non partiranno finché non torna la linea.
-* **Soluzione Raccomandata:**
-  1. Aggiungere un modulo hardware **RTC DS3231 I2C** (alimentato a batteria tampone).
-  2. Il modulo si collega direttamente agli stessi pin I2C (`SDA`/`SCL`) già utilizzati per l'espansore PCF8574 a costo zero di pin aggiuntivi.
-  3. All'avvio, l'ESP8266 legge l'ora dall'RTC anche se internet è assente, e aggiorna l'RTC via NTP solo quando la rete è disponibile.
+### Assegnato alla VPS ([`oracle_vps/`](oracle_vps/))
+* **Bot Telegram Interattivo:** Menu a bottoni inline per stato, settori manuali, programmi test, pioggia e stop d'emergenza.
+* **Sicurezza:** Whitelist su `from_user.id` (accesso negato e log per utenti non autorizzati).
+* **Esperienza Utente Single-Message:** Aggiornamento in-place del messaggio senza spam nella chat.
+* **Notifiche Push & Watchdog:** Allarmi di centralina offline e notifiche di avvio/fine programmi schedulati.
 
 ---
 
-## 5. Esempio Architettura Servizio VPS (Python Bridge)
+## 4. Implementazioni di Resilienza nel Firmware ([src/main.cpp](src/main.cpp))
 
-Un tipico servizio su VPS può essere realizzato con un semplice container Docker o script Python (`paho-mqtt` + `python-telegram-bot`):
+Tutte le criticità di connettività sono state risolte nel firmware:
 
-```python
-# Schema logico del servizio Python su VPS
-import paho.mqtt.client as mqtt
-import telebot # o python-telegram-bot
+### 1. Connessioni non bloccanti con `millis()` (IMPLEMENTATO ✅)
+* In [src/main.cpp](src/main.cpp), `handleWiFi()` e `handleMqtt()` tentano la riconnessione a intervalli regolari (10s e 5s) senza mai usare cicli `while` o `delay()` bloccanti.
+* `processPrograms()` continua a girare ad ogni ciclo di `loop()` garantendo l'irrigazione anche in assenza di rete.
 
-# 1. Quando arriva un log di errore dall'ESP8266
-def on_message(client, userdata, msg):
-    if msg.topic == "log":
-        payload = json.loads(msg.payload.decode())
-        if "error" in payload:
-            bot.send_message(CHAT_ID, f"🚨 *Allarme Irrigazione*: {payload['error']}", parse_mode="Markdown")
-    elif msg.topic == "info":
-        # Aggiorna stato locale o database storico
-        pass
+### 2. MQTT Last Will and Testament - LWT (IMPLEMENTATO ✅)
+* All'atto della connessione MQTT, l'ESP registra su HiveMQ il testamento:
+  `{"error":"ESP8266 disconnected unexpectedly (LWT)"}` sul topic `log`.
+* Se l'alimentazione viene a mancare improvvisamente, HiveMQ pubblica automaticamente il messaggio e la VPS avvisa l'utente all'istante.
 
-# 2. Quando l'utente preme un pulsante su Telegram
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    if call.data == "stop_all":
-        mqtt_client.publish("command", json.dumps({"action": "stop_program"}))
-        bot.answer_callback_query(call.id, "Comando STOP inviato!")
-    elif call.data == "toggle_rain":
-        mqtt_client.publish("command", json.dumps({"action": "set_rain_mode", "enabled": True}))
-        bot.answer_callback_query(call.id, "Modalità pioggia attivata!")
-```
+### 3. Sincronizzazione Oraria (NTP & Opzione RTC)
+* Il firmware sincronizza l'ora locale con i server NTP (`pool.ntp.org`). Una volta sincronizzato, l'ESP8266 mantiene autonomamente il tempo con il clock interno.
+* *(Opzione Hardware Futura):* In caso di riavvio dell'ESP direttamente durante un blackout prolungato senza internet, è possibile aggiungere un modulo RTC DS3231 sugli stessi pin I2C (`SDA`/`SCL`) del PCF8574.
 
 ---
 
-## 6. Riepilogo Roadmap Consigliata
+## 5. Struttura del Servizio VPS ([`oracle_vps/`](oracle_vps/))
 
-1. **Fase 1 (Senza modifiche hardware):**
-   - Configurare lo script/bot Telegram su VPS o mini-server collegato allo stesso HiveMQ Cloud.
-   - Ricevere allarmi da `log` e inviare comandi su `command`.
-2. **Fase 2 (Resilienza Firmware):**
-   - Modificare `connectWiFi()` e `connectMqtt()` in [src/main.cpp](src/main.cpp) per renderle completamente non bloccanti con `millis()`.
-3. **Fase 3 (Affidabilità Totale Offline):**
-   - Integrare il modulo RTC DS3231 sul bus I2C per avere data e ora esatte anche dopo un riavvio a internet spento.
+Il servizio supervisore cloud è completamente implementato e include:
+
+| File | Descrizione |
+| ---- | ----------- |
+| [`oracle_vps/config.py`](oracle_vps/config.py) | Configurazione centralizzata con caricamento `.env` e validazione whitelist utenti. |
+| [`oracle_vps/mqtt_manager.py`](oracle_vps/mqtt_manager.py) | Client MQTT over TLS (porta 8883) verso HiveMQ Cloud con cache di stato e dispatcher comandi. |
+| [`oracle_vps/bot_handlers.py`](oracle_vps/bot_handlers.py) | Gestione menu Telegram in-place, popup modali, navigazione e decoratore `@authorized_only`. |
+| [`oracle_vps/notifier.py`](oracle_vps/notifier.py) | Notifiche push per eventi critici e gestione allarmi basata su MQTT LWT (Last Will and Testament). |
+| [`oracle_vps/DEAD_MAN_SWITCH_GUIDE.md`](oracle_vps/DEAD_MAN_SWITCH_GUIDE.md) | Guida tecnica e codice pronto per reimplementare il Dead Man's Switch con ping in futuro se necessario. |
+| [`oracle_vps/main.py`](oracle_vps/main.py) | Entrypoint principale con gestione lifecycle asincrono e log puliti. |
+| [`oracle_vps/Dockerfile`](oracle_vps/Dockerfile) | Immagine container multi-architettura (ARM64 / AMD64) basata su Python 3.11 slim. |
+| [`oracle_vps/docker-compose.yml`](oracle_vps/docker-compose.yml) | Orchestrazione con riavvio automatico continuo (`restart: unless-stopped`). |
+| [`oracle_vps/DEPLOY.md`](oracle_vps/DEPLOY.md) | Guida passo-passo al deploy sia tramite Docker che con systemd Linux. |
+
+
+---
+
+## 6. Stato della Roadmap
+
+1. **Fase 1: Sviluppo Servizio VPS Telegram & MQTT Bridge** ➔ **COMPLETATO ✅**
+   - Bot operativo con pulsanti inline, whitelist ID, aggiornamento in-place e auto-refresh MQTT.
+2. **Fase 2: Resilienza Firmware ESP8266 & LWT** ➔ **COMPLETATO ✅**
+   - Riconnessione non bloccante `handleWiFi()` e `handleMqtt()` con `millis()`.
+   - Integrazione Last Will and Testament su HiveMQ Cloud testata e compilata con successo.
+3. **Fase 3: Deploy su VPS (Oracle Cloud Always Free / Linux)** ➔ **PRONTO PER IL DEPLOY ✅**
+   - Testato in locale, configurato con variabili `.env` e pronto per `docker-compose up -d --build`.
+4. **Fase 4 (Hardware Opzionale Futuro):**
+   - Modulo RTC DS3231 I2C per mantenere l'ora anche dopo reboot isolati a internet spento.
